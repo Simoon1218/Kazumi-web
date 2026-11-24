@@ -1353,7 +1353,9 @@ function renderPlayer(app, params) {
           });
         } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
           video.src = playUrl;
+          video.load();
           video.addEventListener("loadedmetadata", maybeResumeAndPlay, { once: true });
+          video.addEventListener("error", () => showStreamError("Safari 原生 HLS 播放失败，请尝试切换其他视频源或线路"), { once: true });
         } else {
           showStreamError("当前浏览器不支持 HLS 流播放");
         }

@@ -610,6 +610,7 @@ async def api_rules_test_resolve(request: Request):
         p = normalize_plugin_dict(raw_plugin)
         full_url = normalize_episode_url(str(p.get("baseURL") or ""), ep_url)
         resolved = await video_resolver.resolve(p, full_url)
+        stream_type = detect_stream_type(resolved.url)
         session = ProxySession(
             original_url=resolved.url,
             referer=str(p.get("referer") or resolved.referer or ""),
@@ -617,15 +618,16 @@ async def api_rules_test_resolve(request: Request):
             plugin_name=p["name"],
             ad_blocker=bool(p.get("adBlocker", True)),
             created_at=time.monotonic(),
+            base_url=str(p.get("baseURL") or ""),
         )
         token = video_proxy.sessions.register(session)
         return {
             "ok": True,
             "token": token,
-            "playUrl": video_proxy.build_root_url(token),
+            "playUrl": video_proxy.build_root_url(token, stream_type),
             "originalUrl": session.original_url,
             "pluginName": session.plugin_name,
-            "streamType": detect_stream_type(session.original_url),
+            "streamType": stream_type,
             "resolveMethod": resolved.method,
         }
     except TimeoutError as exc:
@@ -690,6 +692,7 @@ async def api_resolve_video(plugin: str = "", episodeUrl: str = ""):
     full_url = normalize_episode_url(str(p.get("baseURL") or ""), ep_url)
     try:
         resolved = await video_resolver.resolve(p, full_url)
+        stream_type = detect_stream_type(resolved.url)
         session = ProxySession(
             original_url=resolved.url,
             referer=str(p.get("referer") or resolved.referer or ""),
@@ -697,14 +700,15 @@ async def api_resolve_video(plugin: str = "", episodeUrl: str = ""):
             plugin_name=p["name"],
             ad_blocker=bool(p.get("adBlocker", True)),
             created_at=time.monotonic(),
+            base_url=str(p.get("baseURL") or ""),
         )
         token = video_proxy.sessions.register(session)
         return {
             "token": token,
-            "playUrl": video_proxy.build_root_url(token),
+            "playUrl": video_proxy.build_root_url(token, stream_type),
             "originalUrl": session.original_url,
             "pluginName": session.plugin_name,
-            "streamType": detect_stream_type(session.original_url),
+            "streamType": stream_type,
             "resolveMethod": resolved.method,
         }
     except TimeoutError as exc:

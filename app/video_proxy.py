@@ -39,6 +39,7 @@ class ProxySession:
     plugin_name: str
     ad_blocker: bool
     created_at: float
+    base_url: str = ""
 
 
 class ProxySessionStore:
@@ -87,13 +88,14 @@ class VideoProxyHandler:
         self.sessions = ProxySessionStore()
 
     @staticmethod
-    def build_root_url(token: str) -> str:
-        return f"/proxy/{token}"
+    def build_root_url(token: str, stream_type: str = "hls") -> str:
+        return f"/proxy/{token}.m3u8" if stream_type == "hls" else f"/proxy/{token}"
 
     @staticmethod
     def build_sub_url(token: str, absolute_url: str) -> str:
+        clean_token = token[:-5] if token.endswith(".m3u8") else token
         encoded = base64.urlsafe_b64encode(absolute_url.encode("utf-8")).decode("ascii").rstrip("=")
-        return f"/proxy/{token}/{encoded}"
+        return f"/proxy/{clean_token}/{encoded}"
 
     @staticmethod
     def decode_sub_path(sub_path: str) -> Optional[str]:
@@ -112,7 +114,8 @@ class VideoProxyHandler:
         return all(c == "\t" or (0x20 <= ord(c) <= 0x7E) for c in val)
 
     async def handle(self, request: Request, token: str, sub_path: Optional[str] = None) -> Response:
-        session = self.sessions.lookup(token)
+        clean_token = token[:-5] if token.endswith(".m3u8") else token
+        session = self.sessions.lookup(clean_token)
         if not session:
             return Response(content="proxy session expired", status_code=410, media_type="text/plain")
 
@@ -138,7 +141,7 @@ class VideoProxyHandler:
 
         # For M3U8 playlists, fetch fully so we can filter ads and rewrite URIs
         if looks_m3u8:
-            return await self._handle_m3u8(target_url, upstream_headers, proxy, session, token)
+            return await self._handle_m3u8(target_url, upstream_headers, proxy, session, clean_token)
 
         client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=15.0),
@@ -152,6 +155,18 @@ class VideoProxyHandler:
             try:
                 req = client.build_request(request.method, target_url, headers=upstream_headers)
                 upstream_resp = await client.send(req, stream=True)
+                if upstream_resp.status_code == 403 and attempt == 0:
+                    alt_ref = self._fallback_referer(session, target_url, upstream_headers.get("Referer", ""))
+                    if alt_ref is not None:
+                        await upstream_resp.aclose()
+                        if alt_ref:
+                            upstream_headers["Referer"] = alt_ref
+                        else:
+                            upstream_headers.pop("Referer", None)
+                        req2 = client.build_request(request.method, target_url, headers=upstream_headers)
+                        upstream_resp = await client.send(req2, stream=True)
+                        if upstream_resp.status_code < 400:
+                            session.referer = alt_ref
                 break
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
                 last_exc = exc
@@ -172,7 +187,7 @@ class VideoProxyHandler:
             body_bytes = await upstream_resp.aread()
             await upstream_resp.aclose()
             await client.aclose()
-            return self._rewrite_m3u8_bytes(body_bytes, final_url, session, token)
+            return self._rewrite_m3u8_bytes(body_bytes, final_url, session, clean_token)
 
         out_headers: dict[str, str] = {}
         for k, v in upstream_resp.headers.items():
@@ -207,6 +222,17 @@ class VideoProxyHandler:
             media_type=upstream_resp.headers.get("content-type"),
         )
 
+    @staticmethod
+    def _fallback_referer(session: ProxySession, target_url: str, current_ref: str) -> Optional[str]:
+        if current_ref:
+            return ""
+        if session.base_url:
+            return session.base_url.rstrip("/") + "/"
+        p = urlparse(target_url)
+        if p.scheme and p.netloc:
+            return f"{p.scheme}://{p.netloc}/"
+        return None
+
     async def _handle_m3u8(
         self,
         target_url: str,
@@ -216,6 +242,7 @@ class VideoProxyHandler:
         token: str,
     ) -> Response:
         last_exc: Optional[Exception] = None
+        req_headers = dict(headers)
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(20.0, connect=10.0),
             follow_redirects=True,
@@ -224,7 +251,27 @@ class VideoProxyHandler:
         ) as client:
             for attempt in range(3):
                 try:
-                    resp = await client.get(target_url, headers=headers)
+                    resp = await client.get(target_url, headers=req_headers)
+                    if resp.status_code == 403:
+                        # Try alternate Referer candidates (no-referer -> baseURL -> target origin)
+                        tried = {req_headers.get("Referer", "")}
+                        p = urlparse(target_url)
+                        origin = f"{p.scheme}://{p.netloc}/" if (p.scheme and p.netloc) else ""
+                        candidates = ["", (session.base_url.rstrip("/") + "/") if session.base_url else "", origin]
+                        for cand in candidates:
+                            if cand in tried:
+                                continue
+                            tried.add(cand)
+                            alt_h = dict(req_headers)
+                            if cand:
+                                alt_h["Referer"] = cand
+                            else:
+                                alt_h.pop("Referer", None)
+                            alt_resp = await client.get(target_url, headers=alt_h)
+                            if alt_resp.status_code < 400:
+                                session.referer = cand
+                                resp = alt_resp
+                                break
                     if resp.status_code >= 400:
                         return Response(content=resp.text, status_code=resp.status_code, media_type="text/plain")
                     return self._rewrite_m3u8_bytes(resp.content, str(resp.url), session, token)

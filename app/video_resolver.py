@@ -350,12 +350,14 @@ class DualStageVideoResolver:
             await self._close_browser_unlocked()
 
     async def _resolve_static(self, plugin: dict[str, Any], episode_url: str, ua: str, referer: str) -> Optional[str]:
-        # Already a direct media link?
-        if re.search(r"\.(?:m3u8|mp4|flv|webm)(?:\?|$)", episode_url, flags=re.IGNORECASE):
-            return episode_url
+        # 1. Unwrap player wrapper URLs (e.g. atom.php?key=0&url=https://.../playlist.m3u8) FIRST
         decoded_direct = decode_video_source(episode_url)
         if decoded_direct != episode_url and decoded_direct.startswith(("http://", "https://")):
             return decoded_direct
+        # 2. Only treat episode_url as direct media if its URL PATH (not query string) ends with a media extension
+        ep_path = urlparse(episode_url).path
+        if re.search(r"\.(?:m3u8|mp4|flv|webm)$", ep_path, flags=re.IGNORECASE):
+            return episode_url
 
         proxy = self.store.get_proxy_url()
         cookie_header = cookie_store.get_cookie_header(plugin["name"], episode_url)
@@ -514,23 +516,24 @@ class DualStageVideoResolver:
     async def resolve(self, plugin: dict[str, Any], episode_url: str) -> ResolvedVideo:
         plugin = normalize_plugin_dict(plugin)
         ua = str(plugin.get("userAgent") or "").strip() or get_random_ua()
-        referer = str(plugin.get("referer") or "").strip() or str(plugin.get("baseURL") or "").strip()
+        explicit_referer = str(plugin.get("referer") or "").strip()
+        page_referer = explicit_referer or str(plugin.get("baseURL") or "").strip()
         mode = str(self.store.get_settings().get("resolverMode") or "auto")
 
         if mode != "browser":
-            static_url = await self._resolve_static(plugin, episode_url, ua, referer)
+            static_url = await self._resolve_static(plugin, episode_url, ua, page_referer)
             if static_url:
                 logger.info("Resolved [%s] via static extractor -> %s", plugin["name"], static_url)
-                return ResolvedVideo(url=static_url, method="static", referer=referer, user_agent=ua)
+                return ResolvedVideo(url=static_url, method="static", referer=explicit_referer, user_agent=ua)
             if mode == "static" or not PLAYWRIGHT_ENABLED:
                 raise RuntimeError("静态解析未能提取到直链，请在设置中启用智能双引擎或无头浏览器解析")
 
         if not PLAYWRIGHT_ENABLED:
             raise RuntimeError("当前服务未启用 Playwright 浏览器解析（PLAYWRIGHT_ENABLED=false）")
 
-        pw_url = await self._resolve_playwright(plugin, episode_url, ua, referer, RESOLVE_TIMEOUT_SECONDS)
+        pw_url = await self._resolve_playwright(plugin, episode_url, ua, page_referer, RESOLVE_TIMEOUT_SECONDS)
         logger.info("Resolved [%s] via Playwright Chromium -> %s", plugin["name"], pw_url)
-        return ResolvedVideo(url=pw_url, method="playwright", referer=referer, user_agent=ua)
+        return ResolvedVideo(url=pw_url, method="playwright", referer=explicit_referer, user_agent=ua)
 
 
 # ============================================================
