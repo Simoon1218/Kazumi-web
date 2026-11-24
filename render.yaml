@@ -16,6 +16,6 @@ services:
       - key: PLAYWRIGHT_ENABLED
         value: "true"
       - key: PLAYWRIGHT_IDLE_SECONDS
-        value: "45"
+        value: "300"
       - key: AUTO_INSTALL_RULES
         value: "recommended"

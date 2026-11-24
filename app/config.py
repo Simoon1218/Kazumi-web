@@ -35,7 +35,7 @@ DEFAULT_PROXY_URL = os.getenv("KAZUMI_PROXY", "").strip()
 
 # Video resolver controls (tuned for Render 512MB RAM)
 PLAYWRIGHT_ENABLED = os.getenv("PLAYWRIGHT_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
-PLAYWRIGHT_IDLE_SECONDS = max(15, int(os.getenv("PLAYWRIGHT_IDLE_SECONDS", "45")))
+PLAYWRIGHT_IDLE_SECONDS = max(15, int(os.getenv("PLAYWRIGHT_IDLE_SECONDS", "300")))
 RESOLVE_TIMEOUT_SECONDS = max(10, int(os.getenv("RESOLVE_TIMEOUT_SECONDS", "25")))
 
 # Auto-seed starter rules on an empty runtime store (comma-separated rule names or "recommended" or "none")

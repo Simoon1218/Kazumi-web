@@ -268,6 +268,10 @@ class DualStageVideoResolver:
                so Render Free Tier (512MB RAM) idles at ~45MB and never OOMs.
     """
 
+    CACHE_TTL_SECONDS = 600
+    CACHE_MAX_SIZE = 200
+    PLAYWRIGHT_HINT_TTL = 1800
+
     def __init__(self, store: RuntimeStore) -> None:
         self.store = store
         self._browser_lock = asyncio.Lock()
@@ -275,6 +279,9 @@ class DualStageVideoResolver:
         self._browser: Any = None
         self._last_used: float = 0.0
         self._reaper_task: Optional[asyncio.Task[Any]] = None
+        self._cache: dict[tuple[str, str], tuple[float, ResolvedVideo]] = {}
+        self._inflight: dict[tuple[str, str], asyncio.Task[ResolvedVideo]] = {}
+        self._playwright_hints: dict[str, float] = {}
 
     async def _ensure_browser(self) -> Any:
         if self._browser is not None and self._browser.is_connected():
@@ -297,6 +304,9 @@ class DualStageVideoResolver:
             "--disable-sync",
             "--mute-audio",
             "--no-first-run",
+            "--metrics-recording-only",
+            "--blink-settings=imagesEnabled=false",
+            "--renderer-process-limit=1",
             "--js-flags=--max-old-space-size=128",
         ]
         proxy_url = self.store.get_proxy_url()
@@ -375,14 +385,14 @@ class DualStageVideoResolver:
         queue: list[tuple[str, str, int]] = [(episode_url, referer, 0)]
 
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(12.0, connect=8.0),
+            timeout=httpx.Timeout(6.0, connect=4.0),
             follow_redirects=True,
             proxy=proxy,
             verify=False,
         ) as client:
             while queue:
                 curr_url, curr_ref, depth = queue.pop(0)
-                if curr_url in visited or depth > 3:
+                if curr_url in visited or depth > 2:
                     continue
                 visited.add(curr_url)
                 req_h = dict(headers)
@@ -398,7 +408,7 @@ class DualStageVideoResolver:
                 found, iframes = _extract_media_from_html(resp.text, str(resp.url))
                 if found:
                     return found
-                for iframe_url in iframes[:3]:
+                for iframe_url in iframes[:2]:
                     if iframe_url not in visited:
                         queue.append((iframe_url, str(resp.url), depth + 1))
         return None
@@ -439,10 +449,14 @@ class DualStageVideoResolver:
                     req = route.request
                     r_type = req.resource_type
                     r_url = req.url
-                    if _is_ad_url(r_url) or r_type in {"image", "font", "stylesheet"}:
+                    if _is_ad_url(r_url) or r_type in {"image", "font", "stylesheet", "manifest", "other"}:
                         await route.abort()
                         return
-                    if re.search(r"\.(?:m3u8|mp4)(?:\?|$)", r_url, flags=re.IGNORECASE) and not _is_ad_url(r_url):
+                    if r_type == "media" and r_url.startswith(("http://", "https://")) and not _is_ad_url(r_url):
+                        _accept(r_url)
+                        await route.abort()
+                        return
+                    if re.search(r"\.(?:m3u8|mp4)(?:\?|$)", urlparse(r_url).path, flags=re.IGNORECASE) and not _is_ad_url(r_url):
                         _accept(r_url)
                     await route.continue_()
 
@@ -515,14 +529,54 @@ class DualStageVideoResolver:
 
     async def resolve(self, plugin: dict[str, Any], episode_url: str) -> ResolvedVideo:
         plugin = normalize_plugin_dict(plugin)
+        cache_key = (plugin["name"], episode_url)
+        now = time.monotonic()
+
+        cached = self._cache.get(cache_key)
+        if cached and (now - cached[0]) < self.CACHE_TTL_SECONDS:
+            logger.info("Resolved [%s] via cache hit -> %s", plugin["name"], cached[1].url)
+            return cached[1]
+
+        inflight = self._inflight.get(cache_key)
+        if inflight and not inflight.done():
+            return await inflight
+
+        task = asyncio.create_task(self._resolve_uncached(plugin, episode_url))
+        self._inflight[cache_key] = task
+        try:
+            result = await task
+            if len(self._cache) >= self.CACHE_MAX_SIZE:
+                oldest = next(iter(self._cache))
+                self._cache.pop(oldest, None)
+            self._cache[cache_key] = (time.monotonic(), result)
+            return result
+        finally:
+            self._inflight.pop(cache_key, None)
+
+    async def _resolve_uncached(self, plugin: dict[str, Any], episode_url: str) -> ResolvedVideo:
         ua = str(plugin.get("userAgent") or "").strip() or get_random_ua()
         explicit_referer = str(plugin.get("referer") or "").strip()
         page_referer = explicit_referer or str(plugin.get("baseURL") or "").strip()
         mode = str(self.store.get_settings().get("resolverMode") or "auto")
+        plugin_key = plugin["name"].lower()
 
-        if mode != "browser":
+        # Always try zero-cost URL unwrap / direct media check first
+        decoded_direct = decode_video_source(episode_url)
+        if decoded_direct != episode_url and decoded_direct.startswith(("http://", "https://")):
+            logger.info("Resolved [%s] via direct unwrap -> %s", plugin["name"], decoded_direct)
+            return ResolvedVideo(url=decoded_direct, method="static", referer=explicit_referer, user_agent=ua)
+        if re.search(r"\.(?:m3u8|mp4|flv|webm)$", urlparse(episode_url).path, flags=re.IGNORECASE):
+            logger.info("Resolved [%s] via direct media URL -> %s", plugin["name"], episode_url)
+            return ResolvedVideo(url=episode_url, method="static", referer=explicit_referer, user_agent=ua)
+
+        # Adaptive fast-path: skip slow static HTML crawl if this plugin recently needed Playwright
+        pw_hint_ts = self._playwright_hints.get(plugin_key, 0.0)
+        prefer_browser = (mode == "auto" and PLAYWRIGHT_ENABLED and (time.monotonic() - pw_hint_ts) < self.PLAYWRIGHT_HINT_TTL)
+
+        if mode != "browser" and not prefer_browser:
             static_url = await self._resolve_static(plugin, episode_url, ua, page_referer)
             if static_url:
+                self._playwright_hints.pop(plugin_key, None)
                 logger.info("Resolved [%s] via static extractor -> %s", plugin["name"], static_url)
                 return ResolvedVideo(url=static_url, method="static", referer=explicit_referer, user_agent=ua)
             if mode == "static" or not PLAYWRIGHT_ENABLED:
@@ -532,6 +586,7 @@ class DualStageVideoResolver:
             raise RuntimeError("当前服务未启用 Playwright 浏览器解析（PLAYWRIGHT_ENABLED=false）")
 
         pw_url = await self._resolve_playwright(plugin, episode_url, ua, page_referer, RESOLVE_TIMEOUT_SECONDS)
+        self._playwright_hints[plugin_key] = time.monotonic()
         logger.info("Resolved [%s] via Playwright Chromium -> %s", plugin["name"], pw_url)
         return ResolvedVideo(url=pw_url, method="playwright", referer=explicit_referer, user_agent=ua)
 

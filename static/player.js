@@ -1370,6 +1370,7 @@ function renderPlayer(app, params) {
   }
 
   let resumedOnce = false;
+  let prefetchTimer = null;
   function maybeResumeAndPlay() {
     if (resumedOnce) return;
     resumedOnce = true;
@@ -1382,6 +1383,16 @@ function renderPlayer(app, params) {
       }
     }
     video.play().catch(() => {});
+    // Prefetch next episode resolution in background after 12s of playback so Next Episode starts instantly
+    clearTimeout(prefetchTimer);
+    prefetchTimer = setTimeout(() => {
+      if (!hasNextEpisode()) return;
+      const eps = getRoadEpisodes(state.road);
+      const nextEp = eps[state.episode];
+      if (nextEp && nextEp.url) {
+        fetch("/api/resolve?plugin=" + encodeURIComponent(state.plugin) + "&episodeUrl=" + encodeURIComponent(nextEp.url)).catch(() => {});
+      }
+    }, 12000);
   }
 
   function showStreamError(msg) {
@@ -1432,6 +1443,7 @@ function renderPlayer(app, params) {
     clearTimeout(hudTimer);
     clearTimeout(shutdownTimer);
     clearTimeout(autoNextTimer);
+    clearTimeout(prefetchTimer);
     clearTimeout(holdRightTimer);
     clearTimeout(longPressTimer);
     clearInterval(progressInterval);
