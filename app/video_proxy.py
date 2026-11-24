@@ -192,7 +192,7 @@ class VideoProxyHandler:
         out_headers: dict[str, str] = {}
         for k, v in upstream_resp.headers.items():
             lk = k.lower()
-            if lk in HOP_BY_HOP_HEADERS:
+            if lk in HOP_BY_HOP_HEADERS or lk == "content-type":
                 continue
             if not self._is_safe_header_val(v):
                 continue

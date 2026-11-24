@@ -491,7 +491,7 @@ function renderPlayer(app, params) {
   });
 
   // ---- Stage Elements ----
-  const video = el("video", { playsinline: true, "webkit-playsinline": "true", preload: "auto", crossorigin: "anonymous" });
+  const video = el("video", { playsinline: true, "webkit-playsinline": "true", preload: "auto" });
   const dmCanvas = el("canvas", { class: "danmaku-canvas" + (dmPrefs.enabled ? "" : " is-hidden") });
   const brightnessVeil = el("div", { class: "player-brightness-veil" });
   const hud = el("div", { class: "player-hud" });
@@ -569,6 +569,14 @@ function renderPlayer(app, params) {
   };
   dmInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.stopPropagation(); sendLocalDm(); } });
 
+  let useDirectMode = false;
+  const routeModeBtn = button("切换直连/代理", () => {
+    if (!state.resolved) return;
+    useDirectMode = !useDirectMode;
+    toast(useDirectMode ? "已切换为 CDN 直连模式（高速不绕服务器）" : "已切换为服务端代理模式（免防盗链/去广告）");
+    loadStreamSource(state.resolved, useDirectMode);
+  }, { variant: "surface", small: true, icon: "swap" });
+
   const quickBar = el("div", { class: "player-quickbar" },
     el("div", { class: "dm-send-bar" },
       dmColorSel,
@@ -576,6 +584,7 @@ function renderPlayer(app, params) {
       dmInput,
       button("发送", sendLocalDm, { small: true, icon: "send" })
     ),
+    routeModeBtn,
     button("换弹幕源", () => openDanmakuSourceSheet({ title: state.title, onLoaded: (items, lbl) => applyLoadedDanmaku(items, lbl) }), { variant: "tonal", small: true, icon: "subtitles" })
   );
 
@@ -1318,52 +1327,105 @@ function renderPlayer(app, params) {
   renderSideBody();
 
   // ---- Resolve & Attach Stream ----
+  function isAppleSafari() {
+    const ua = navigator.userAgent || "";
+    return /iPad|iPhone|iPod|Macintosh/i.test(ua) && /Safari/i.test(ua) && !/Chrome|CriOS|FxiOS|Edg|Firefox/i.test(ua);
+  }
+
+  let _loadSeq = 0;
+  async function loadStreamSource(res, direct) {
+    const seq = ++_loadSeq;
+    errBox.innerHTML = "";
+    resumedOnce = false;
+    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+    video.pause();
+    video.removeAttribute("src");
+
+    const orig = res.originalUrl || "";
+    const isHttpsOrig = orig.startsWith("https://");
+    const canDirect = direct && isHttpsOrig && !res.needsReferer;
+    useDirectMode = canDirect;
+    const playUrl = canDirect ? orig : res.playUrl;
+    const isHls = res.streamType === "hls" || /\.m3u8/i.test(orig);
+
+    const methodText = res.resolveMethod === "static" ? "静态极速提取" : "Playwright 浏览器嗅探";
+    const routeText = canDirect ? "CDN 直连" : "服务端代理";
+    metaLine.textContent = "规则：" + res.pluginName + " · " + methodText + " · " + routeText + " · " + (isHls ? "HLS" : "MP4");
+    const rSpan = routeModeBtn.querySelector("span:last-child");
+    if (rSpan) rSpan.textContent = canDirect ? "当前:直连" : "当前:代理";
+
+    // Avoid CORS block on direct CDN MP4/HLS; only enable crossorigin on same-origin proxy
+    if (canDirect) video.removeAttribute("crossorigin");
+    else video.setAttribute("crossorigin", "anonymous");
+
+    const fallbackToProxy = (reason) => {
+      if (seq !== _loadSeq) return;
+      if (canDirect) {
+        toast("直连受限，自动切换至服务端代理播放…");
+        loadStreamSource(res, false);
+      } else {
+        showStreamError(reason);
+      }
+    };
+
+    if (isHls) {
+      // On iOS/macOS Safari, native AVPlayer HLS is dramatically faster & more reliable than hls.js ManagedMediaSource
+      if (isAppleSafari() && video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = playUrl;
+        video.load();
+        video.addEventListener("loadedmetadata", maybeResumeAndPlay, { once: true });
+        video.addEventListener("error", () => fallbackToProxy("Safari 原生 HLS 播放失败，请尝试切换视频源或线路"), { once: true });
+        return;
+      }
+      const Hls = await ensureHlsLib();
+      if (seq !== _loadSeq) return;
+      if (Hls && Hls.isSupported()) {
+        hlsInstance = new Hls({
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+          enableWorker: true,
+        });
+        hlsInstance.loadSource(playUrl);
+        hlsInstance.attachMedia(video);
+        hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (seq === _loadSeq) maybeResumeAndPlay();
+        });
+        hlsInstance.on(Hls.Events.ERROR, (_ev, data) => {
+          if (seq !== _loadSeq) return;
+          if (data && data.fatal) {
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !canDirect) hlsInstance.startLoad();
+            else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hlsInstance.recoverMediaError();
+            else fallbackToProxy("HLS 流播放失败：" + (data.details || "未知错误"));
+          }
+        });
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = playUrl;
+        video.load();
+        video.addEventListener("loadedmetadata", maybeResumeAndPlay, { once: true });
+        video.addEventListener("error", () => fallbackToProxy("原生 HLS 播放失败，请尝试切换视频源"), { once: true });
+      } else {
+        showStreamError("当前浏览器不支持 HLS 流播放");
+      }
+    } else {
+      video.src = playUrl;
+      video.load();
+      video.addEventListener("loadedmetadata", maybeResumeAndPlay, { once: true });
+      video.addEventListener("error", () => fallbackToProxy("视频流加载失败，请尝试切换线路或使用外部播放器"), { once: true });
+    }
+  }
+
   async function attachVideoStream() {
     errBox.innerHTML = "";
     metaLine.textContent = "正在解析视频地址（规则：" + state.plugin + "）…";
     try {
       const res = await fetchJson("/api/resolve?plugin=" + encodeURIComponent(state.plugin) + "&episodeUrl=" + encodeURIComponent(state.episodeUrl));
       state.resolved = res;
-      const methodText = res.resolveMethod === "static" ? "静态极速提取" : "Playwright 浏览器嗅探";
-      metaLine.textContent = "规则：" + res.pluginName + " · 解析引擎：" + methodText + " · 格式：" + (res.streamType || "auto").toUpperCase();
-
-      const playUrl = res.playUrl;
-      const isHls = res.streamType === "hls" || /\.m3u8/i.test(res.originalUrl || "");
-
-      if (isHls) {
-        const Hls = await ensureHlsLib();
-        if (Hls && Hls.isSupported()) {
-          if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-          hlsInstance = new Hls({
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-            enableWorker: true,
-          });
-          hlsInstance.loadSource(playUrl);
-          hlsInstance.attachMedia(video);
-          hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-            maybeResumeAndPlay();
-          });
-          hlsInstance.on(Hls.Events.ERROR, (_ev, data) => {
-            if (data && data.fatal) {
-              if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hlsInstance.startLoad();
-              else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hlsInstance.recoverMediaError();
-              else showStreamError("HLS 流播放失败：" + (data.details || "未知错误"));
-            }
-          });
-        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-          video.src = playUrl;
-          video.load();
-          video.addEventListener("loadedmetadata", maybeResumeAndPlay, { once: true });
-          video.addEventListener("error", () => showStreamError("Safari 原生 HLS 播放失败，请尝试切换其他视频源或线路"), { once: true });
-        } else {
-          showStreamError("当前浏览器不支持 HLS 流播放");
-        }
-      } else {
-        video.src = playUrl;
-        video.addEventListener("loadedmetadata", maybeResumeAndPlay, { once: true });
-        video.addEventListener("error", () => showStreamError("MP4 视频流加载失败，请尝试切换线路或使用外部播放器"), { once: true });
-      }
+      const orig = res.originalUrl || "";
+      const isHls = res.streamType === "hls" || /\.m3u8/i.test(orig);
+      // Prefer direct CDN for HTTPS MP4/non-HLS streams (avoids US Render double-hop latency & bandwidth throttle);
+      // auto-falls back to server proxy on any error!
+      const preferDirect = !isHls && orig.startsWith("https://") && !res.needsReferer;
+      await loadStreamSource(res, preferDirect);
     } catch (e) {
       showStreamError(e.message || "视频解析失败");
     }

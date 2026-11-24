@@ -710,6 +710,7 @@ async def api_resolve_video(plugin: str = "", episodeUrl: str = ""):
             "pluginName": session.plugin_name,
             "streamType": stream_type,
             "resolveMethod": resolved.method,
+            "needsReferer": bool(session.referer),
         }
     except TimeoutError as exc:
         return _err(504, "resolve_timeout", str(exc))

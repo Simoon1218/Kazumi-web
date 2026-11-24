@@ -83,8 +83,10 @@ def normalize_episode_url(base_url: str, raw: str) -> str:
         scheme = base_parsed.scheme
 
     path = resolved.path or ""
-    while len(path) > 1 and path.endswith("/"):
-        path = path[:-1]
+    # Only strip trailing slash on non-signed relative/site paths (preserve signed CDN URLs ending in '/')
+    if not (raw_parsed.scheme in {"http", "https"} and raw_parsed.netloc):
+        while len(path) > 1 and path.endswith("/"):
+            path = path[:-1]
 
     return urlunparse((scheme, resolved.netloc, path, "", resolved.query, resolved.fragment))
 
