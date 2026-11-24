@@ -1028,7 +1028,7 @@ function renderSettings(app, initialCat) {
       pane.append(
         section("内置加速镜像", splitList([
           switchTile({ title: "Bangumi API 镜像 (api.kazumi.fyi)", desc: "服务端访问 Bangumi 受限时开启", checked: !!APP_SETTINGS.enableBangumiProxy, onChange: (v) => saveServerSettings({ enableBangumiProxy: v }) }),
-          switchTile({ title: "Bangumi 封面图加速镜像", desc: "将浏览器加载的 lain.bgm.tv 封面自动切换为镜像站", checked: getImageMirror(), onChange: (v) => { setImageMirror(v); toast("已切换图片镜像"); } }),
+          switchTile({ title: "Bangumi 封面图服务端代理（推荐开启）", desc: "经 Render 服务端转发并缓存 lain.bgm.tv 封面，解决国内网络无法加载封面问题", checked: getImageMirror(), onChange: (v) => { setImageMirror(v); toast("已切换封面代理设置，刷新生效"); } }),
           switchTile({ title: "GitHub 规则仓库镜像加速", desc: "优先经镜像拉取 Predidit/KazumiRules", checked: !!APP_SETTINGS.enableGitProxy, onChange: (v) => saveServerSettings({ enableGitProxy: v }) }),
         ], { tight: true })),
         section("自定义出站代理（HTTP / SOCKS5）", splitList([

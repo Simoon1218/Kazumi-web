@@ -6,6 +6,9 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
+from urllib.parse import urlparse
+
+import httpx
 from fastapi import FastAPI, File, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -81,6 +84,29 @@ PUBLIC_PATHS = {
     "/api/auth/logout",
     "/favicon.ico",
 }
+
+ALLOWED_IMAGE_HOSTS = {
+    "lain.bgm.tv",
+    "bgm.tv",
+    "bangumi.tv",
+    "chii.in",
+    "api.kazumi.fyi",
+    "api.trace.moe",
+    "media.trace.moe",
+}
+_img_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_img_client() -> httpx.AsyncClient:
+    global _img_client
+    if _img_client is None or _img_client.is_closed:
+        _img_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(12.0, connect=6.0),
+            follow_redirects=True,
+            verify=False,
+            limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
+        )
+    return _img_client
 
 
 @app.middleware("http")
@@ -228,6 +254,37 @@ async def auth_logout():
 # ============================================================
 # Bangumi Public Data & Account Sync
 # ============================================================
+
+
+@app.get("/api/img")
+async def api_proxy_image(url: str = ""):
+    target = (url or "").strip()
+    if target.startswith("//"):
+        target = "https:" + target
+    parsed = urlparse(target)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or host not in ALLOWED_IMAGE_HOSTS:
+        return Response(status_code=400)
+    try:
+        client = _get_img_client()
+        resp = await client.get(
+            target,
+            headers={
+                "User-Agent": get_random_ua(),
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            },
+        )
+        if resp.status_code >= 400:
+            return Response(status_code=resp.status_code)
+        ct = resp.headers.get("content-type") or "image/jpeg"
+        return Response(
+            content=resp.content,
+            status_code=200,
+            media_type=ct,
+            headers={"Cache-Control": "public, max-age=604800, immutable"},
+        )
+    except Exception:
+        return Response(status_code=502)
 
 
 @app.get("/api/popular")

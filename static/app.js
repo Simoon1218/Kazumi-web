@@ -534,7 +534,7 @@ function getDeviceId() {
 }
 
 function getImageMirror() {
-  return localStorage.getItem("webImageMirror") === "1";
+  return localStorage.getItem("webImageMirror") !== "0";
 }
 
 function setImageMirror(enabled) {
@@ -544,9 +544,10 @@ function setImageMirror(enabled) {
 function bangumiImageUrl(url) {
   if (!url) return "/assets/noface.jpeg";
   let u = String(url).trim();
+  if (u.startsWith("/")) return u;
   if (u.startsWith("//")) u = "https:" + u;
-  if (getImageMirror()) {
-    u = u.replace("https://lain.bgm.tv/", "https://api.kazumi.fyi/lain/");
+  if (getImageMirror() && /^https?:\/\/(?:lain\.bgm\.tv|bgm\.tv|bangumi\.tv|chii\.in)\//i.test(u)) {
+    return "/api/img?url=" + encodeURIComponent(u);
   }
   return u;
 }
@@ -554,19 +555,25 @@ function bangumiImageUrl(url) {
 function bestBangumiImage(images) {
   if (!images) return "/assets/noface.jpeg";
   if (typeof images === "string") return bangumiImageUrl(images);
-  const raw = images.large || images.common || images.medium || images.small || images.grid || "";
+  const raw = images.common || images.large || images.medium || images.small || images.grid || "";
   return bangumiImageUrl(raw);
 }
 
 function coverImg(src, cls, alt) {
+  const raw = src || "";
   const img = el("img", {
-    src: bangumiImageUrl(src),
+    src: bangumiImageUrl(raw),
     class: cls || "",
     alt: alt || "",
     loading: "lazy",
     referrerpolicy: "no-referrer",
   });
   img.addEventListener("error", () => {
+    if (!img.dataset.retriedProxy && /^https?:\/\//i.test(raw) && !img.src.includes("/api/img")) {
+      img.dataset.retriedProxy = "1";
+      img.src = "/api/img?url=" + encodeURIComponent(raw);
+      return;
+    }
     if (!img.dataset.fallback) {
       img.dataset.fallback = "1";
       img.src = "/assets/noface.jpeg";
