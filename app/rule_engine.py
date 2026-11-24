@@ -865,7 +865,7 @@ class RuleEngine:
                         }
                     )
                 if episodes:
-                    roads.append({"name": f"播放线路{len(roads) + 1}", "episodes": episodes})
+                    roads.append(self._make_road(f"播放线路{len(roads) + 1}", episodes))
                 else:
                     diagnostics.append(f"线路 {r_idx} 没有有效剧集，已跳过")
             except Exception as exc:
@@ -879,6 +879,15 @@ class RuleEngine:
             request_url=chapter_url,
             status_code=status,
         )
+
+    @staticmethod
+    def _make_road(name: str, episodes: list[dict[str, str]]) -> dict[str, Any]:
+        return {
+            "name": name,
+            "episodes": episodes,
+            "data": [e["src"] for e in episodes],
+            "identifier": [e["name"] for e in episodes],
+        }
 
     @staticmethod
     def _resolve_api_episode_url(
@@ -939,7 +948,7 @@ class RuleEngine:
                     continue
                 episodes.append({"name": ep_name, "src": page_url})
             if episodes:
-                roads.append({"name": r_name or f"播放线路{len(roads) + 1}", "episodes": episodes})
+                roads.append(self._make_road(r_name or f"播放线路{len(roads) + 1}", episodes))
         return roads
 
     def _parse_api_delimited(
@@ -978,7 +987,7 @@ class RuleEngine:
                     episodes.append({"name": ep_name, "src": page_url})
             if episodes:
                 r_name = road_names[r_idx].strip() if r_idx < len(road_names) else ""
-                roads.append({"name": r_name or f"播放线路{len(roads) + 1}", "episodes": episodes})
+                roads.append(self._make_road(r_name or f"播放线路{len(roads) + 1}", episodes))
         return roads
 
 

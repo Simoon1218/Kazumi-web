@@ -1206,6 +1206,24 @@ function playEpisodeParams(ctx) {
   return "/play?" + qs.toString();
 }
 
+function extractRoadEpisodes(road) {
+  if (!road) return [];
+  if (Array.isArray(road.episodes) && road.episodes.length) {
+    return road.episodes.map((e, i) => ({
+      ep: i + 1,
+      url: e.src || e.url || "",
+      name: (e.name || ("第 " + (i + 1) + " 话")).trim(),
+    }));
+  }
+  const urls = Array.isArray(road.data) ? road.data : [];
+  const names = Array.isArray(road.identifier) ? road.identifier : [];
+  return urls.map((u, i) => ({
+    ep: i + 1,
+    url: u,
+    name: (names[i] || ("第 " + (i + 1) + " 话")).trim(),
+  }));
+}
+
 function episodePanel(opts) {
   const roads = opts.roads || [];
   let roadIdx = Math.max(0, Math.min(opts.road || 0, Math.max(0, roads.length - 1)));
@@ -1220,9 +1238,8 @@ function episodePanel(opts) {
       wrap.append(emptyState({ compact: true, icon: "movie", title: "未解析到播放线路", message: "该视频源暂无可用剧集，请尝试切换其他规则源" }));
       return;
     }
-    const road = roads[roadIdx] || { name: "线路 1", data: [], identifier: [] };
-    const urls = road.data || [];
-    const names = road.identifier || [];
+    const road = roads[roadIdx] || { name: "线路 1", episodes: [], data: [], identifier: [] };
+    const indexed = extractRoadEpisodes(road);
 
     if (roads.length > 1) {
       const routeBtn = el("button", {
@@ -1230,7 +1247,7 @@ function episodePanel(opts) {
         class: "route-btn sl",
         onClick: (e) => {
           openMenu(e.currentTarget, roads.map((r, i) => ({
-            label: (r.name || ("播放列表 " + (i + 1))) + " (" + (r.data ? r.data.length : 0) + " 集)",
+            label: (r.name || ("播放列表 " + (i + 1))) + " (" + extractRoadEpisodes(r).length + " 集)",
             selected: i === roadIdx,
             icon: i === roadIdx ? "check" : "list",
             onClick: () => { roadIdx = i; rangeIndex = 0; if (opts.onRoadChange) opts.onRoadChange(i); render(); },
@@ -1248,7 +1265,7 @@ function episodePanel(opts) {
     }
 
     const toolbar = el("div", { class: "ep-toolbar" },
-      el("span", { class: "ep-count" }, "共 " + urls.length + " 集"),
+      el("span", { class: "ep-count" }, "共 " + indexed.length + " 集"),
       el("div", { style: { display: "flex", gap: "4px" } },
         opts.currentEpisode ? button("定位当前", () => {
           const elCur = wrap.querySelector(".ep-row.is-current");
@@ -1259,11 +1276,6 @@ function episodePanel(opts) {
     );
     wrap.append(toolbar);
 
-    const indexed = urls.map((u, i) => ({
-      ep: i + 1,
-      url: u,
-      name: (names[i] || ("第 " + (i + 1) + " 话")).trim(),
-    }));
     const ordered = reverseOrder ? indexed.slice().reverse() : indexed;
 
     // Chunk selector for long anime (> 50 episodes)

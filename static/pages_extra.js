@@ -380,13 +380,13 @@ function renderRuleTester(app, params) {
         const roads = res.roads || [];
         const rows = [];
         roads.forEach((r, rIdx) => {
-          (r.data || []).slice(0, 5).forEach((epUrl, eIdx) => {
-            const epName = (r.identifier && r.identifier[eIdx]) || ("第 " + (eIdx + 1) + " 话");
+          const eps = typeof extractRoadEpisodes === "function" ? extractRoadEpisodes(r) : [];
+          eps.slice(0, 5).forEach((ep) => {
             rows.push(splitRow(tile({
-              title: (r.name || ("线路 " + (rIdx + 1))) + " · " + epName,
-              desc: epUrl,
+              title: (r.name || ("线路 " + (rIdx + 1))) + " · " + ep.name,
+              desc: ep.url,
               chevron: true,
-              onClick: () => runResolveTest(epUrl, epName, item),
+              onClick: () => runResolveTest(ep.url, ep.name, item),
             })));
           });
         });

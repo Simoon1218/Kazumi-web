@@ -745,9 +745,9 @@ function renderPlayer(app, params) {
     })));
   }
 
-  function getRoadEpisodes() {
-    const road = state.roads[state.road];
-    return road ? (road.data || []) : [];
+  function getRoadEpisodes(rIdx) {
+    const road = state.roads[rIdx != null ? rIdx : state.road];
+    return typeof extractRoadEpisodes === "function" ? extractRoadEpisodes(road) : [];
   }
 
   function hasPrevEpisode() { return state.episode > 1; }
@@ -755,11 +755,10 @@ function renderPlayer(app, params) {
 
   function switchEpisode(nextEp, nextRoad) {
     const rIdx = nextRoad != null ? nextRoad : state.road;
-    const road = state.roads[rIdx];
-    if (!road || !road.data || nextEp < 1 || nextEp > road.data.length) return;
+    const eps = getRoadEpisodes(rIdx);
+    if (!eps.length || nextEp < 1 || nextEp > eps.length) return;
     saveProgressNow();
-    const epUrl = road.data[nextEp - 1];
-    const epName = (road.identifier && road.identifier[nextEp - 1]) || ("第 " + nextEp + " 话");
+    const target = eps[nextEp - 1];
     go(playEpisodeParams({
       plugin: state.plugin,
       src: state.src,
@@ -767,8 +766,8 @@ function renderPlayer(app, params) {
       title: state.title,
       road: rIdx,
       episode: nextEp,
-      episodeUrl: epUrl,
-      episodeName: epName,
+      episodeUrl: target.url,
+      episodeName: target.name,
     }));
   }
 
