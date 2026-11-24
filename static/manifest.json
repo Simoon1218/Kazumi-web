@@ -1,0 +1,21 @@
+{
+  "name": "Kazumi",
+  "short_name": "Kazumi",
+  "description": "基于自定义规则的番剧采集与在线观看 Web 版",
+  "start_url": "/#/home?tab=popular",
+  "display": "standalone",
+  "background_color": "#101410",
+  "theme_color": "#4CAF50",
+  "icons": [
+    {
+      "src": "/assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: kazumi-web
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: ACCESS_PASSWORD
+        sync: false
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: DANDANAPI_APPID
+        sync: false
+      - key: DANDANAPI_KEY
+        sync: false
+      - key: PLAYWRIGHT_ENABLED
+        value: "true"
+      - key: PLAYWRIGHT_IDLE_SECONDS
+        value: "45"
+      - key: AUTO_INSTALL_RULES
+        value: "recommended"
